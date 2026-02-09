@@ -17,6 +17,8 @@ const { initializeQueues } = require('./queues/queueManager');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+
+
 // Trust proxy for accurate IP addresses
 app.set('trust proxy', 1);
 
@@ -28,6 +30,7 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
   credentials: true
 }));
+
 
 // Raw body parser for webhook signature verification
 app.use('/api/v1/webhooks', express.raw({ type: 'application/json' }));
@@ -114,9 +117,14 @@ function gracefulShutdown() {
     });
 }
 
+
+
 // Start server
 app.listen(PORT, () => {
-  logger.info(`VeriSage X3 server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+  logger.info(`VeriSage X3 server is running on port ${PORT} in ${process.env.NODE_ENV} mode`);
 });
+
+
+
 
 module.exports = app;
