@@ -1,9 +1,12 @@
+
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
 const AuditLog = require('../models/AuditLog');
 const { retryFailedEvent } = require('../queues/queueManager');
 const logger = require('../utils/logger');
+
+
 
 /**
  * GET /api/v1/events
@@ -59,6 +62,8 @@ router.get('/', async (req, res) => {
   }
 });
 
+
+
 /**
  * GET /api/v1/events/:eventId
  * Get single event details
@@ -93,6 +98,8 @@ router.get('/:eventId', async (req, res) => {
     });
   }
 });
+
+
 
 /**
  * POST /api/v1/events/:eventId/retry
@@ -156,6 +163,8 @@ router.post('/:eventId/retry', async (req, res) => {
   }
 });
 
+
+
 /**
  * GET /api/v1/events/stats/summary
  * Get event statistics
@@ -197,6 +206,8 @@ router.get('/stats/summary', async (req, res) => {
   }
 });
 
+
+
 /**
  * GET /api/v1/events/failed/queue
  * Get all failed events (error queue)
@@ -224,5 +235,8 @@ router.get('/failed/queue', async (req, res) => {
     });
   }
 });
+
+
+
 
 module.exports = router;
