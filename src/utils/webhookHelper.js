@@ -1,73 +1,88 @@
-const crypto = require('crypto');
+
+const { Webhook } = require('svix');
 const logger = require('./logger');
 
+
+
 /**
- * Verify webhook signature from Indigo HMS
- * @param {Buffer} rawBody - Raw request body
- * @param {string} signature - Signature from request header
- * @param {string} timestamp - Timestamp from request header
- * @returns {boolean} - True if signature is valid
+ * Verify webhook signature from Indigo HMS via Svix
+ * @param {string} payload - Stringified JSON payload
+ * @param {object} headers - Request headers containing svix-id, svix-timestamp, svix-signature
+ * @returns {object|null} - Verified payload object or null if invalid
  */
-function verifyWebhookSignature(rawBody, signature, timestamp) {
+function verifyWebhookSignature(payload, headers) {
   try {
-    // Check if timestamp is within tolerance
-    const timestampToleranceSeconds = parseInt(
-      process.env.WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS || '300'
-    );
-    const currentTime = Math.floor(Date.now() / 1000);
-    const webhookTime = parseInt(timestamp);
+    const secret = process.env.SVIX_WEBHOOK_SECRET;
     
-    if (Math.abs(currentTime - webhookTime) > timestampToleranceSeconds) {
-      logger.webhook.warn('Webhook timestamp outside tolerance window', {
-        currentTime,
-        webhookTime,
-        difference: currentTime - webhookTime
-      });
-      return false;
-    }
-    
-    // Generate expected signature
-    const secret = process.env.INDIGO_WEBHOOK_SECRET;
     if (!secret) {
-      logger.webhook.error('INDIGO_WEBHOOK_SECRET not configured');
-      return false;
+      logger.webhook.error('SVIX_WEBHOOK_SECRET not configured');
+      return null;
     }
     
-    // Create signature: HMAC-SHA256(timestamp + "." + rawBody)
-    const payload = `${timestamp}.${rawBody}`;
-    const expectedSignature = crypto
-      .createHmac('sha256', secret)
-      .update(payload)
-      .digest('hex');
-    
-    // Compare signatures using timing-safe comparison
-    const isValid = crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature)
-    );
-    
-    if (!isValid) {
-      logger.webhook.warn('Webhook signature verification failed');
+    if (!secret.startsWith('whsec_')) {
+      logger.webhook.warn('SVIX_WEBHOOK_SECRET should start with "whsec_"');
     }
     
-    return isValid;
+    // Extract Svix headers
+    const svixId = headers['svix-id'];
+    const svixTimestamp = headers['svix-timestamp'];
+    const svixSignature = headers['svix-signature'];
+    
+    // Validate headers are present
+    if (!svixId || !svixTimestamp || !svixSignature) {
+      logger.webhook.warn('Missing required Svix headers', {
+        hasSvixId: !!svixId,
+        hasSvixTimestamp: !!svixTimestamp,
+        hasSvixSignature: !!svixSignature
+      });
+      return null;
+    }
+    
+    // Create Svix webhook verifier
+    const wh = new Webhook(secret);
+    
+    // Verify the webhook signature
+    const verified = wh.verify(payload, {
+      'svix-id': svixId,
+      'svix-timestamp': svixTimestamp,
+      'svix-signature': svixSignature
+    });
+    
+    logger.webhook.info('Webhook signature verified successfully', {
+      svixId,
+      eventType: verified.event
+    });
+    
+    return verified;
+    
   } catch (error) {
-    logger.webhook.error('Error verifying webhook signature:', error);
-    return false;
+    // Svix throws an error if verification fails
+    logger.webhook.error('Webhook signature verification failed:', {
+      error: error.message,
+      type: error.constructor.name
+    });
+    return null;
   }
 }
 
 /**
  * Generate a unique event ID from webhook payload
+ * Uses Svix message ID for idempotency if available
  * @param {object} payload - Webhook payload
+ * @param {string} svixId - Svix message ID from headers
  * @returns {string} - Unique event ID
  */
-function generateEventId(payload) {
+function generateEventId(payload, svixId = null) {
+  // Prefer Svix ID for true idempotency
+  if (svixId) {
+    return `svix-${svixId}`;
+  }
+  
+  // Fallback to payload-based ID
   const eventType = payload.event;
   const dataId = payload.data?.id || 'unknown';
   const timestamp = Date.now();
   
-  // Create deterministic ID: eventType-dataId-timestamp
   return `${eventType}-${dataId}-${timestamp}`;
 }
 
@@ -105,16 +120,32 @@ function extractEventType(payload) {
 }
 
 /**
- * Check if event is a duplicate based on Indigo HMS event ID
+ * Check if event is a duplicate based on Event ID or Svix ID
  * @param {object} Event - Event model
- * @param {string} indigoEventId - Event ID from Indigo HMS
+ * @param {string} eventId - Internal event ID
+ * @param {string} svixId - Svix message ID (for idempotency)
  * @returns {Promise<boolean>} - True if duplicate exists
  */
-async function isDuplicateEvent(Event, indigoEventId) {
+async function isDuplicateEvent(Event, eventId, svixId = null) {
   try {
-    const existing = await Event.findOne({
-      'rawPayload.data.id': indigoEventId
-    });
+    const query = {
+      $or: [
+        { eventId },
+        // Check by Svix ID if provided (primary idempotency check)
+        ...(svixId ? [{ eventId: `svix-${svixId}` }] : [])
+      ]
+    };
+    
+    const existing = await Event.findOne(query);
+    
+    if (existing) {
+      logger.webhook.info('Duplicate event detected', {
+        eventId,
+        svixId,
+        existingEventId: existing.eventId
+      });
+    }
+    
     return !!existing;
   } catch (error) {
     logger.webhook.error('Error checking for duplicate event:', error);

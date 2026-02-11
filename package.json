@@ -1,7 +1,7 @@
 {
   "name": "verisage-x3",
   "version": "1.0.0",
-  "description": "Event-driven integration middleware between Indigo HMS and Sage X3",
+  "description": "Integration bridge between Indigo HMS and Sage X3 ERP",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -14,7 +14,8 @@
     "indigo-hms",
     "integration",
     "middleware",
-    "webhooks"
+    "webhooks",
+    "erp"
   ],
   "author": "VeriSage X3 Team",
   "license": "MIT",

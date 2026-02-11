@@ -1,3 +1,4 @@
+
 const express = require('express');
 const router = express.Router();
 const Event = require('../models/Event');
@@ -12,25 +13,33 @@ const {
 } = require('../utils/webhookHelper');
 const logger = require('../utils/logger');
 
+
+
 /**
  * POST /api/v1/webhooks/indigo
- * Main webhook endpoint for receiving events from Indigo HMS
+ * Main webhook endpoint for receiving events from Indigo HMS via Svix
  */
 router.post('/indigo', async (req, res) => {
   const startTime = Date.now();
   
   try {
-    // Extract headers
-    const signature = req.get(process.env.INDIGO_WEBHOOK_SIGNATURE_HEADER || 'X-Indigo-Signature');
-    const timestamp = req.get(process.env.INDIGO_WEBHOOK_TIMESTAMP_HEADER || 'X-Indigo-Timestamp');
+    // Get raw body as string for Svix verification
+    const rawBody = req.body.toString('utf-8');
     
-    // Get raw body for signature verification
-    const rawBody = req.body;
+    // Extract Svix headers
+    const headers = {
+      'svix-id': req.get('svix-id'),
+      'svix-timestamp': req.get('svix-timestamp'),
+      'svix-signature': req.get('svix-signature')
+    };
     
-    // Verify signature
-    if (!verifyWebhookSignature(rawBody, signature, timestamp)) {
+    // Verify webhook signature using Svix
+    const verified = verifyWebhookSignature(rawBody, headers);
+    
+    if (!verified) {
       logger.webhook.warn('Webhook signature verification failed', {
-        ip: req.ip
+        ip: req.ip,
+        hasSvixId: !!headers['svix-id']
       });
       
       return res.status(401).json({
@@ -39,8 +48,8 @@ router.post('/indigo', async (req, res) => {
       });
     }
     
-    // Parse payload
-    const payload = JSON.parse(rawBody.toString());
+    // Use verified payload (already parsed by Svix)
+    const payload = verified;
     
     // Extract event type
     const eventType = extractEventType(payload);
@@ -57,7 +66,9 @@ router.post('/indigo', async (req, res) => {
     }
     
     // Check if event type is enabled
-    const featureKey = `ENABLE_${eventType.split('.')[0].toUpperCase()}_EVENTS`;
+    const eventCategory = eventType.split('.')[0].toUpperCase();
+    const featureKey = `ENABLE_${eventCategory}_EVENTS`;
+    
     if (process.env[featureKey] === 'false') {
       logger.webhook.info(`Event type disabled: ${eventType}`);
       
@@ -68,24 +79,29 @@ router.post('/indigo', async (req, res) => {
       });
     }
     
-    // Check for duplicate events
-    const indigoEventId = payload.data?.id;
-    if (indigoEventId && await isDuplicateEvent(Event, indigoEventId)) {
-      logger.webhook.warn('Duplicate event detected', {
+    // Get Svix ID for idempotency
+    const svixId = headers['svix-id'];
+    
+    // Generate internal event ID (using Svix ID for idempotency)
+    const eventId = generateEventId(payload, svixId);
+    
+    // Check for duplicate events using both internal ID and Svix ID
+    if (await isDuplicateEvent(Event, eventId, svixId)) {
+      logger.webhook.warn('Duplicate event detected (idempotency check)', {
         eventType,
-        indigoEventId
+        eventId,
+        svixId
       });
       
+      // Return 200 for duplicates (idempotent response)
       return res.status(200).json({
         success: true,
-        message: 'Duplicate event ignored',
+        message: 'Duplicate event ignored (idempotency)',
         eventType,
-        indigoEventId
+        eventId,
+        svixId
       });
     }
-    
-    // Generate internal event ID
-    const eventId = generateEventId(payload);
     
     // Create event record
     const event = new Event({
@@ -93,10 +109,14 @@ router.post('/indigo', async (req, res) => {
       eventType,
       rawPayload: payload,
       status: 'received',
-      webhookSignature: signature,
-      webhookTimestamp: new Date(parseInt(timestamp) * 1000),
+      webhookSignature: headers['svix-signature'],
+      webhookTimestamp: new Date(parseInt(headers['svix-timestamp']) * 1000),
       sourceIp: req.ip,
-      metadata: payload.metadata || {}
+      metadata: {
+        ...payload.metadata,
+        svixId,
+        svixTimestamp: headers['svix-timestamp']
+      }
     });
     
     await event.save();
@@ -112,7 +132,7 @@ router.post('/indigo', async (req, res) => {
       },
       details: {
         eventType,
-        indigoEventId,
+        svixId,
         payloadSize: rawBody.length
       },
       result: {
@@ -130,15 +150,17 @@ router.post('/indigo', async (req, res) => {
     logger.webhook.info('Webhook received successfully', {
       eventId,
       eventType,
+      svixId,
       duration: Date.now() - startTime
     });
     
-    // Return success response immediately
-    res.status(202).json({
+    // Return 200 success immediately (Svix expects 2xx response quickly)
+    res.status(200).json({
       success: true,
       message: 'Event received and queued for processing',
       eventId,
-      eventType
+      eventType,
+      svixId
     });
     
   } catch (error) {
@@ -170,6 +192,7 @@ router.post('/indigo', async (req, res) => {
       duration
     });
     
+    // Return 500 on errors (Svix will retry)
     res.status(500).json({
       success: false,
       error: 'Internal server error',
