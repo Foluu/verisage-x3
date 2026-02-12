@@ -1,5 +1,9 @@
 const Joi = require('joi');
 
+// ============================================================================
+// INDIGO HMS PAYLOAD STRUCTURE
+// ============================================================================
+
 // Common schemas
 const operatorSchema = Joi.object({
   id: Joi.string().required(),
@@ -10,41 +14,126 @@ const patientSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().required(),
   mrn: Joi.string().required(),
-  phoneNumber: Joi.string().allow('', null)
+  phoneNumber: Joi.string().allow('', null),
+  email: Joi.string().email().allow('', null),
+  gender: Joi.string().allow('', null),
+  owing: Joi.number().allow(null),
+  sponsors: Joi.array().optional(),
+  admission: Joi.object().optional()
 });
 
-const variantSchema = Joi.object({
-  id: Joi.string().required(),
-  title: Joi.string().required(),
-  sku: Joi.string().required()
-});
-
-const itemSchema = Joi.object({
+// Item schema for actual payload
+const actualItemSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().required(),
   quantity: Joi.number().min(0).required(),
   price: Joi.number().min(0).required(),
-  variant: variantSchema.required()
+  basePrice: Joi.number().min(0).optional(),
+  total: Joi.number().min(0).optional(),
+  billItemId: Joi.string().optional(),
+  type: Joi.string().optional(),
+  categories: Joi.array().optional(),
+  date: Joi.string().optional(),
+  dispenseCompleted: Joi.boolean().optional(),
+  dispenseLog: Joi.array().optional(),
+  returnCompleted: Joi.boolean().optional(),
+  returnLog: Joi.array().optional(),
+  posClassifications: Joi.array().optional(),
+  operator: operatorSchema.optional(),
+  source: Joi.object({
+    id: Joi.string(),
+    name: Joi.string()
+  }).optional(),
+  // Note: NO variant in actual payload!
 });
 
-const locationSchema = Joi.object({
-  id: Joi.string().required(),
-  name: Joi.string().required()
+// ============================================================================
+// PAYMENT EVENTS - ACTUAL STRUCTURE
+// ============================================================================
+
+const paymentCreatedSchema = Joi.object({
+  event: Joi.string().valid('payment.created').required(),
+  data: Joi.object({
+    id: Joi.string().required(),
+    timestamp: Joi.string().optional(),
+    claims: Joi.array().optional(),
+    
+    // Invoice object (not "bill"!)
+    invoice: Joi.object({
+      id: Joi.string().required(),
+      proforma: Joi.boolean().required(),
+      items: Joi.array().items(actualItemSchema).min(1).required(),
+      patient: patientSchema.required(),
+      operator: operatorSchema.required()
+    }).required(),
+    
+    // Payments array (not single payment object!)
+    payments: Joi.array().items(Joi.object({
+      id: Joi.string().required(),
+      amount: Joi.number().min(0).required(),
+      method: Joi.string().valid('wallet', 'cash', 'pos', 'transfer', 'cheque', 'direct-lodgement').required(),
+      paymentReference: Joi.string().allow('', null).optional(),
+      provider: Joi.string().allow('', null).optional(),
+      operator: operatorSchema.optional()
+    })).min(1).required()
+  }).required(),
+  metadata: Joi.object().optional()
 });
 
-const stockItemSchema = Joi.object({
-  code: Joi.string().required(),
-  batchId: Joi.string().required(),
-  quantity: Joi.number().min(0).required()
+const paymentCancelledSchema = Joi.object({
+  event: Joi.string().valid('payment.cancelled').required(),
+  data: Joi.object({
+    id: Joi.string().required(),
+    reason: Joi.string().required(),
+    operator: operatorSchema.required()
+  }).required(),
+  metadata: Joi.object().optional()
 });
 
-// Invoice validation schemas
+// ============================================================================
+// STOCK EVENTS - ACTUAL STRUCTURE
+// ============================================================================
+
+const stockCreatedSchema = Joi.object({
+  event: Joi.string().valid('stock.created').required(),
+  data: Joi.object({
+    id: Joi.string().required(),
+    batchId: Joi.string().required(),
+    code: Joi.string().required(),
+    quantity: Joi.number().min(0).required(),
+    costPrice: Joi.number().min(0).required(),
+    expiryDate: Joi.string().allow(null).optional(),
+    timestamp: Joi.string().optional(),
+    
+    // Item object (not separate fields)
+    item: Joi.object({
+      id: Joi.string().required(),
+      name: Joi.string().required()
+    }).required(),
+    
+    // Supplier object
+    supplier: Joi.object({
+      id: Joi.string().required(),
+      name: Joi.string().required()
+    }).required(),
+    
+    // Note: NO variant in actual payload!
+    // Note: NO barcode, upc in this payload
+    operator: operatorSchema.optional()
+  }).required(),
+  metadata: Joi.object().optional()
+});
+
+// ============================================================================
+// INVOICE EVENTS - KEEP EXISTING (assumed correct based on payment structure)
+// ============================================================================
+
 const invoiceCreatedSchema = Joi.object({
   event: Joi.string().valid('invoice.created').required(),
   data: Joi.object({
     id: Joi.string().required(),
     proforma: Joi.boolean().required(),
-    items: Joi.array().items(itemSchema).min(1).required(),
+    items: Joi.array().items(actualItemSchema).min(1).required(),
     patient: patientSchema.required(),
     operator: operatorSchema.required()
   }).required(),
@@ -55,7 +144,7 @@ const invoiceUpdatedSchema = Joi.object({
   event: Joi.string().valid('invoice.updated').required(),
   data: Joi.object({
     id: Joi.string().required(),
-    items: Joi.array().items(itemSchema).min(1).required(),
+    items: Joi.array().items(actualItemSchema).min(1).required(),
     patient: patientSchema.required(),
     operator: operatorSchema.required()
   }).required(),
@@ -72,37 +161,10 @@ const invoiceCancelledSchema = Joi.object({
   metadata: Joi.object().optional()
 });
 
-// Payment validation schemas
-const paymentCreatedSchema = Joi.object({
-  event: Joi.string().valid('payment.created').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    amount: Joi.number().min(0).required(),
-    method: Joi.string().valid('wallet', 'cash', 'pos', 'transfer', 'cheque', 'direct-lodgement').required(),
-    paymentReference: Joi.string().allow('', null),
-    provider: Joi.string().allow('', null),
-    bill: Joi.object({
-      id: Joi.string().required(),
-      proforma: Joi.boolean().required(),
-      items: Joi.array().items(itemSchema).min(1).required(),
-      patient: patientSchema.required()
-    }).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
+// ============================================================================
+// ITEM EVENTS - Keep existing (need actual payload to verify)
+// ============================================================================
 
-const paymentCancelledSchema = Joi.object({
-  event: Joi.string().valid('payment.cancelled').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    reason: Joi.string().required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-// Item validation schemas
 const itemCreatedSchema = Joi.object({
   event: Joi.string().valid('item.created').required(),
   data: Joi.object({
@@ -111,187 +173,56 @@ const itemCreatedSchema = Joi.object({
     categories: Joi.array().items(Joi.object({
       id: Joi.string().required(),
       name: Joi.string().required()
-    })).min(1).required(),
-    type: Joi.string().valid('product', 'service').required(),
-    unitOfSale: Joi.string().required(),
-    unitOfPurchase: Joi.string().required(),
+    })).optional(),
+    type: Joi.string().valid('product', 'service').optional(),
+    unitOfSale: Joi.string().optional(),
+    unitOfPurchase: Joi.string().optional(),
     attributes: Joi.object().optional(),
     variants: Joi.array().optional(),
     pricing: Joi.array().optional(),
-    operator: operatorSchema.required()
+    operator: operatorSchema.optional()
   }).required(),
   metadata: Joi.object().optional()
 });
 
-const itemUpdatedSchema = Joi.object({
-  event: Joi.string().valid('item.updated').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    operator: operatorSchema.required()
-  }).required(),
+// Simplified/flexible schemas for other events until we see actual payloads
+const genericEventSchema = Joi.object({
+  event: Joi.string().required(),
+  data: Joi.object().required(),
   metadata: Joi.object().optional()
 });
 
-const itemArchivedSchema = Joi.object({
-  event: Joi.string().valid('item.archived').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
+// ============================================================================
+// EXPORT VALIDATION SCHEMAS
+// ============================================================================
 
-// Stock validation schemas
-const stockCreatedSchema = Joi.object({
-  event: Joi.string().valid('stock.created').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    batchId: Joi.string().required(),
-    barcode: Joi.string().allow('', null),
-    upc: Joi.string().allow('', null),
-    code: Joi.string().required(),
-    expiryDate: Joi.date().allow(null),
-    quantity: Joi.number().min(0).required(),
-    variant: variantSchema.required(),
-    costPrice: Joi.number().min(0).required(),
-    item: Joi.string().required(),
-    supplier: Joi.object({
-      id: Joi.string().required(),
-      name: Joi.string().required()
-    }).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockUpdatedSchema = Joi.object({
-  event: Joi.string().valid('stock.updated').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    batchId: Joi.string().required(),
-    barcode: Joi.string().allow('', null),
-    upc: Joi.string().allow('', null),
-    expiryDate: Joi.date().allow(null),
-    variant: variantSchema.required(),
-    costPrice: Joi.number().min(0).required(),
-    supplier: Joi.object({
-      id: Joi.string().required(),
-      name: Joi.string().required()
-    }).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockIncrementedSchema = Joi.object({
-  event: Joi.string().valid('stock.incremented').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    quantity: Joi.number().min(0).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockTransferredSchema = Joi.object({
-  event: Joi.string().valid('stock.transferred').required(),
-  data: Joi.object({
-    from: locationSchema.required(),
-    to: locationSchema.required(),
-    comment: Joi.string().allow('', null),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockRecalledSchema = Joi.object({
-  event: Joi.string().valid('stock.recalled').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    from: locationSchema.required(),
-    to: locationSchema.required(),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockArchivedSchema = Joi.object({
-  event: Joi.string().valid('stock.archived').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    reason: Joi.string().required(),
-    quantity: Joi.number().min(0).required(),
-    operator: operatorSchema.required(),
-    from: locationSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockDispensedSchema = Joi.object({
-  event: Joi.string().valid('stock.dispensed').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    to: Joi.object({
-      id: Joi.string().required(),
-      name: Joi.string().required(),
-      type: Joi.string().required(),
-      mrn: Joi.string().allow('', null)
-    }).required(),
-    purpose: Joi.string().valid('consumables', 'sale').required(),
-    bill: Joi.string().allow('', null),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
-    operator: operatorSchema.required(),
-    from: locationSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockSoldSchema = Joi.object({
-  event: Joi.string().valid('stock.sold').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
-    bill: Joi.string().required(),
-    operator: operatorSchema.required(),
-    from: locationSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-const stockReturnedSchema = Joi.object({
-  event: Joi.string().valid('stock.returned').required(),
-  data: Joi.object({
-    id: Joi.string().required(),
-    reason: Joi.string().required(),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
-    from: locationSchema.required(),
-    to: locationSchema.required(),
-    operator: operatorSchema.required()
-  }).required(),
-  metadata: Joi.object().optional()
-});
-
-// Export validation schemas mapped by event type
 const validationSchemas = {
+  // Payment events - UPDATED
+  'payment.created': paymentCreatedSchema,
+  'payment.cancelled': paymentCancelledSchema,
+  
+  // Stock events - UPDATED
+  'stock.created': stockCreatedSchema,
+  
+  // Invoice events - UPDATED
   'invoice.created': invoiceCreatedSchema,
   'invoice.updated': invoiceUpdatedSchema,
   'invoice.cancelled': invoiceCancelledSchema,
-  'payment.created': paymentCreatedSchema,
-  'payment.cancelled': paymentCancelledSchema,
+  
+  // Item events - Keep flexible for now
   'item.created': itemCreatedSchema,
-  'item.updated': itemUpdatedSchema,
-  'item.archived': itemArchivedSchema,
-  'stock.created': stockCreatedSchema,
-  'stock.updated': stockUpdatedSchema,
-  'stock.incremented': stockIncrementedSchema,
-  'stock.transferred': stockTransferredSchema,
-  'stock.recalled': stockRecalledSchema,
-  'stock.archived': stockArchivedSchema,
-  'stock.dispensed': stockDispensedSchema,
-  'stock.sold': stockSoldSchema,
-  'stock.returned': stockReturnedSchema
+  'item.updated': genericEventSchema,
+  'item.archived': genericEventSchema,
+  
+  // Stock events - Keep flexible until we see actual payloads
+  'stock.updated': genericEventSchema,
+  'stock.incremented': genericEventSchema,
+  'stock.transferred': genericEventSchema,
+  'stock.recalled': genericEventSchema,
+  'stock.archived': genericEventSchema,
+  'stock.dispensed': genericEventSchema,
+  'stock.sold': genericEventSchema,
+  'stock.returned': genericEventSchema
 };
 
 module.exports = validationSchemas;

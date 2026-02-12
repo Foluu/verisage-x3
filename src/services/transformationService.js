@@ -23,13 +23,13 @@ class TransformationService {
     
     const lineItems = data.items.map((item, index) => ({
       lineNumber: index + 1,
-      itemCode: item.variant.sku,
+      itemCode: item.id, // Use item ID since no SKU/variant in actual payload
       itemDescription: item.name,
       quantity: item.quantity,
       unitPrice: this.convertCurrency(item.price),
-      lineTotal: this.convertCurrency(item.price * item.quantity),
-      variantId: item.variant.id,
-      variantTitle: item.variant.title
+      lineTotal: this.convertCurrency(item.total || (item.price * item.quantity)),
+      itemId: item.id,
+      type: item.type || 'unknown'
     }));
     
     const totalAmount = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
@@ -37,16 +37,17 @@ class TransformationService {
     return {
       documentType: 'SI', // Sales Invoice
       invoiceId: data.id,
-      invoiceNumber: data.id, // May need mapping
+      invoiceNumber: data.id,
       isProforma: data.proforma,
       invoiceDate: new Date().toISOString(),
       customerReference: data.patient.mrn,
       customerName: data.patient.name,
       customerId: data.patient.id,
       customerPhone: data.patient.phoneNumber || '',
+      customerEmail: data.patient.email || '',
       lineItems,
       subtotal: totalAmount,
-      taxAmount: 0, // Calculate if needed
+      taxAmount: 0,
       totalAmount,
       currency: 'NGN',
       operator: {
@@ -91,40 +92,72 @@ class TransformationService {
   }
   
   /**
-   * Transform payment.created event
+   * Transform payment.created event - UPDATED FOR ACTUAL PAYLOAD
    */
   transformPaymentCreated(payload) {
     const { data } = payload;
     
-    const lineItems = data.bill.items.map((item, index) => ({
+    // Transform invoice items
+    const lineItems = data.invoice.items.map((item, index) => ({
       lineNumber: index + 1,
-      itemCode: item.variant.sku,
+      itemCode: item.id,
       itemDescription: item.name,
       quantity: item.quantity,
       unitPrice: this.convertCurrency(item.price),
-      lineTotal: this.convertCurrency(item.price * item.quantity)
+      lineTotal: this.convertCurrency(item.total || (item.price * item.quantity)),
+      itemId: item.id,
+      type: item.type || 'unknown'
     }));
+    
+    // Get primary payment (first payment in array)
+    const primaryPayment = data.payments[0];
+    
+    // Calculate total from all payments
+    const totalPaid = data.payments.reduce((sum, p) => sum + p.amount, 0);
     
     return {
       documentType: 'PAY', // Payment
       paymentId: data.id,
-      paymentDate: new Date().toISOString(),
-      amount: this.convertCurrency(data.amount),
+      paymentDate: data.timestamp || new Date().toISOString(),
+      amount: this.convertCurrency(totalPaid),
       currency: 'NGN',
-      paymentMethod: this.mapPaymentMethod(data.method),
-      paymentReference: data.paymentReference || '',
-      provider: data.provider || '',
-      billId: data.bill.id,
-      isProforma: data.bill.proforma,
-      customerReference: data.bill.patient.mrn,
-      customerName: data.bill.patient.name,
-      customerId: data.bill.patient.id,
+      
+      // Primary payment details
+      paymentMethod: this.mapPaymentMethod(primaryPayment.method),
+      paymentReference: primaryPayment.paymentReference || '',
+      provider: primaryPayment.provider || '',
+      
+      // Invoice details (using 'invoice' not 'bill')
+      billId: data.invoice.id,
+      isProforma: data.invoice.proforma,
+      
+      // Customer details
+      customerReference: data.invoice.patient.mrn,
+      customerName: data.invoice.patient.name,
+      customerId: data.invoice.patient.id,
+      customerEmail: data.invoice.patient.email || '',
+      customerPhone: data.invoice.patient.phoneNumber || '',
+      
+      // Line items
       lineItems,
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
-      metadata: payload.metadata || {}
+      
+      // All payments (for reference)
+      allPayments: data.payments.map(p => ({
+        id: p.id,
+        amount: this.convertCurrency(p.amount),
+        method: this.mapPaymentMethod(p.method),
+        reference: p.paymentReference || '',
+        operator: p.operator || data.invoice.operator
+      })),
+      
+      // Operator
+      operator: primaryPayment.operator || data.invoice.operator,
+      
+      metadata: {
+        ...payload.metadata,
+        claims: data.claims || [],
+        timestamp: data.timestamp
+      }
     };
   }
   
@@ -174,24 +207,21 @@ class TransformationService {
       itemId: data.id,
       itemName: data.name,
       itemType: data.type === 'product' ? 'STOCK' : 'SERVICE',
-      categories: data.categories.map(cat => ({
+      categories: (data.categories || []).map(cat => ({
         id: cat.id,
         name: cat.name
       })),
-      unitOfSale: data.unitOfSale,
-      unitOfPurchase: data.unitOfPurchase,
+      unitOfSale: data.unitOfSale || '',
+      unitOfPurchase: data.unitOfPurchase || '',
       attributes: data.attributes || {},
       createdDate: new Date().toISOString(),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
   /**
-   * Transform stock.created event
+   * Transform stock.created event - UPDATED FOR ACTUAL PAYLOAD
    */
   transformStockCreated(payload) {
     const { data } = payload;
@@ -201,24 +231,27 @@ class TransformationService {
       stockId: data.id,
       batchId: data.batchId,
       stockCode: data.code,
-      barcode: data.barcode || '',
-      upc: data.upc || '',
-      itemId: data.item,
-      variantId: data.variant.id,
-      variantTitle: data.variant.title,
-      sku: data.variant.sku,
+      
+      // Item details from nested object
+      itemId: data.item.id,
+      itemName: data.item.name,
+      
       quantity: data.quantity,
       costPrice: this.convertCurrency(data.costPrice),
       totalValue: this.convertCurrency(data.costPrice * data.quantity),
       expiryDate: data.expiryDate,
+      
+      // Supplier details
       supplierId: data.supplier.id,
       supplierName: data.supplier.name,
-      receiptDate: new Date().toISOString(),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
-      metadata: payload.metadata || {}
+      
+      receiptDate: data.timestamp || new Date().toISOString(),
+      operator: data.operator || { id: 'system', name: 'System' },
+      
+      metadata: {
+        ...payload.metadata,
+        timestamp: data.timestamp
+      }
     };
   }
   
@@ -239,16 +272,13 @@ class TransformationService {
         name: data.to.name
       },
       comment: data.comment || '',
-      transferDate: new Date().toISOString(),
+      transferDate: data.timestamp || new Date().toISOString(),
       items: data.stocks.map(stock => ({
         stockCode: stock.code,
         batchId: stock.batchId,
         quantity: stock.quantity
       })),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
@@ -268,16 +298,13 @@ class TransformationService {
         id: data.from.id,
         name: data.from.name
       },
-      issueDate: new Date().toISOString(),
+      issueDate: data.timestamp || new Date().toISOString(),
       items: data.stocks.map(stock => ({
         stockCode: stock.code,
         batchId: stock.batchId,
         quantity: stock.quantity
       })),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
@@ -290,7 +317,7 @@ class TransformationService {
     
     return {
       documentType: 'STK_OUT', // Stock Issue
-      issueType: data.purpose.toUpperCase(),
+      issueType: data.purpose ? data.purpose.toUpperCase() : 'DISPENSED',
       issueId: data.id,
       billId: data.bill || '',
       toRecipient: {
@@ -303,16 +330,13 @@ class TransformationService {
         id: data.from.id,
         name: data.from.name
       },
-      issueDate: new Date().toISOString(),
+      issueDate: data.timestamp || new Date().toISOString(),
       items: data.stocks.map(stock => ({
         stockCode: stock.code,
         batchId: stock.batchId,
         quantity: stock.quantity
       })),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
@@ -335,16 +359,13 @@ class TransformationService {
         id: data.to.id,
         name: data.to.name
       },
-      returnDate: new Date().toISOString(),
+      returnDate: data.timestamp || new Date().toISOString(),
       items: data.stocks.map(stock => ({
         stockCode: stock.code,
         batchId: stock.batchId,
         quantity: stock.quantity
       })),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
