@@ -1,4 +1,6 @@
+
 const mongoose = require('mongoose');
+
 
 const eventSchema = new mongoose.Schema({
   // Event identification
@@ -8,6 +10,8 @@ const eventSchema = new mongoose.Schema({
     unique: true,
     index: true
   },
+  
+  // Event type
   eventType: {
     type: String,
     required: true,
@@ -33,7 +37,7 @@ const eventSchema = new mongoose.Schema({
     index: true
   },
   
-  // Event payload
+  // Raw webhook payload
   rawPayload: {
     type: mongoose.Schema.Types.Mixed,
     required: true
@@ -44,70 +48,71 @@ const eventSchema = new mongoose.Schema({
     type: String,
     enum: ['received', 'validated', 'transformed', 'synced', 'failed', 'reversed'],
     default: 'received',
+    required: true,
     index: true
   },
   
-  // Validation
+  // Validation result
   validationResult: {
-    isValid: { type: Boolean, default: false },
+    isValid: Boolean,
     errors: [String],
     validatedAt: Date
   },
   
-  // Transformation
+  // Transformed payload (ready for Sage X3)
   transformedPayload: {
     type: mongoose.Schema.Types.Mixed
   },
-  transformedAt: Date,
   
-  // Sage X3 sync details
-  sageX3Transaction: {
+  // Sync result
+  syncResult: {
+    success: Boolean,
     documentReference: String,
-    documentType: String,
     syncedAt: Date,
     response: mongoose.Schema.Types.Mixed
   },
   
-  // Error handling
+  // Error tracking
   errors: [{
     type: {
       type: String,
-      enum: ['validation', 'business_rule', 'sage_api', 'network', 'system']
+      enum: ['validation', 'transformation', 'sage_api', 'business_rule', 'system']
     },
     message: String,
     details: mongoose.Schema.Types.Mixed,
-    occurredAt: { type: Date, default: Date.now }
+    occurredAt: {
+      type: Date,
+      default: Date.now
+    }
   }],
   
-  // Retry tracking
+  // Retry mechanism
   retryCount: {
     type: Number,
     default: 0
   },
-  lastRetryAt: Date,
-  nextRetryAt: Date,
+  retryScheduledFor: Date,
   
   // Reversal tracking
   reversed: {
     type: Boolean,
-    default: false
+    default: false,
+    index: true
   },
   reversalReason: String,
   reversalTransactionId: String,
   reversedAt: Date,
-  
-  // Metadata
-  metadata: {
-    type: mongoose.Schema.Types.Mixed
-  },
   
   // Webhook metadata
   webhookSignature: String,
   webhookTimestamp: Date,
   sourceIp: String,
   
-  // Audit trail
-  processedBy: String,
+  // Additional metadata
+  metadata: {
+    type: mongoose.Schema.Types.Mixed
+  },
+  
   createdAt: {
     type: Date,
     default: Date.now,
@@ -122,85 +127,134 @@ const eventSchema = new mongoose.Schema({
   collection: 'events'
 });
 
-// Indexes for common queries
+// Indexes for efficient querying
 eventSchema.index({ eventType: 1, status: 1 });
 eventSchema.index({ createdAt: -1 });
-eventSchema.index({ 'sageX3Transaction.documentReference': 1 });
-eventSchema.index({ status: 1, nextRetryAt: 1 });
+eventSchema.index({ status: 1, createdAt: -1 });
+eventSchema.index({ 'metadata.svixId': 1 });
 
-// Pre-save middleware
+// Pre-save middleware to update timestamp
 eventSchema.pre('save', function(next) {
   this.updatedAt = new Date();
   next();
 });
 
 // Instance methods
+
+/**
+ * Mark event as validated
+ */
 eventSchema.methods.markAsValidated = function(isValid, errors = []) {
+  this.status = isValid ? 'validated' : 'failed';
   this.validationResult = {
     isValid,
     errors,
     validatedAt: new Date()
   };
-  this.status = isValid ? 'validated' : 'failed';
+  
+  if (!isValid) {
+    this.errors.push({
+      type: 'validation',
+      message: 'Validation failed',
+      details: { errors },
+      occurredAt: new Date()
+    });
+  }
+  
   return this.save();
 };
 
-eventSchema.methods.markAsTransformed = function(transformedData) {
-  this.transformedPayload = transformedData;
-  this.transformedAt = new Date();
+/**
+ * Mark event as transformed
+ */
+eventSchema.methods.markAsTransformed = function(transformedPayload) {
   this.status = 'transformed';
+  this.transformedPayload = transformedPayload;
   return this.save();
 };
 
-eventSchema.methods.markAsSynced = function(sageResponse) {
-  this.sageX3Transaction = {
-    ...sageResponse,
-    syncedAt: new Date()
-  };
+/**
+ * Mark event as synced
+ */
+eventSchema.methods.markAsSynced = function(syncResult) {
   this.status = 'synced';
+  this.syncResult = {
+    success: true,
+    documentReference: syncResult.documentReference,
+    syncedAt: new Date(),
+    response: syncResult.response
+  };
   return this.save();
 };
 
-eventSchema.methods.markAsFailed = function(errorType, errorMessage, errorDetails) {
+/**
+ * Mark event as failed
+ */
+eventSchema.methods.markAsFailed = function(errorType, message, details = {}) {
+  this.status = 'failed';
   this.errors.push({
     type: errorType,
-    message: errorMessage,
-    details: errorDetails,
+    message,
+    details,
     occurredAt: new Date()
   });
-  this.status = 'failed';
   return this.save();
 };
 
+/**
+ * Mark event as reversed
+ */
+eventSchema.methods.markAsReversed = function(reason, transactionId) {
+  this.reversed = true;
+  this.status = 'reversed';
+  this.reversalReason = reason;
+  this.reversalTransactionId = transactionId;
+  this.reversedAt = new Date();
+  return this.save();
+};
+
+/**
+ * Increment retry count
+ */
 eventSchema.methods.incrementRetry = function(delayMs) {
   this.retryCount += 1;
-  this.lastRetryAt = new Date();
-  this.nextRetryAt = new Date(Date.now() + delayMs);
-  return this.save();
-};
-
-eventSchema.methods.markAsReversed = function(reason, reversalTxnId) {
-  this.reversed = true;
-  this.reversalReason = reason;
-  this.reversalTransactionId = reversalTxnId;
-  this.reversedAt = new Date();
-  this.status = 'reversed';
+  this.retryScheduledFor = new Date(Date.now() + delayMs);
   return this.save();
 };
 
 // Static methods
+
+/**
+ * Find event by eventId
+ */
 eventSchema.statics.findByEventId = function(eventId) {
   return this.findOne({ eventId });
 };
 
-eventSchema.statics.findPendingRetries = function() {
-  return this.find({
-    status: 'failed',
-    retryCount: { $lt: parseInt(process.env.MAX_RETRY_ATTEMPTS || 3) },
-    nextRetryAt: { $lte: new Date() }
-  });
+/**
+ * Find events by status
+ */
+eventSchema.statics.findByStatus = function(status, limit = 100) {
+  return this.find({ status })
+    .sort({ createdAt: -1 })
+    .limit(limit);
 };
 
+/**
+ * Find failed events ready for retry
+ */
+eventSchema.statics.findRetryableEvents = function() {
+  const now = new Date();
+  return this.find({
+    status: 'failed',
+    retryScheduledFor: { $lte: now },
+    retryCount: { $lt: parseInt(process.env.MAX_RETRY_ATTEMPTS || 3) }
+  }).sort({ retryScheduledFor: 1 });
+};
+
+/**
+ * Get event statistics
+ */
 eventSchema.statics.getEventStats = function(startDate, endDate) {
   return this.aggregate([
     {
@@ -226,6 +280,37 @@ eventSchema.statics.getEventStats = function(startDate, endDate) {
   ]);
 };
 
+/**
+ * Get failed events count
+ */
+eventSchema.statics.getFailedCount = function() {
+  return this.countDocuments({ status: 'failed' });
+};
+
+/**
+ * Get pending events count
+ */
+eventSchema.statics.getPendingCount = function() {
+  return this.countDocuments({ 
+    status: { $in: ['received', 'validated', 'transformed'] } 
+  });
+};
+
+/**
+ * Clean up old events
+ */
+eventSchema.statics.cleanupOldEvents = function(daysToRetain = 90) {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysToRetain);
+  
+  return this.deleteMany({
+    createdAt: { $lt: cutoffDate },
+    status: { $in: ['synced', 'reversed'] }
+  });
+};
+
 const Event = mongoose.model('Event', eventSchema);
+
+
 
 module.exports = Event;
