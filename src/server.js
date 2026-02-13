@@ -1,5 +1,3 @@
-
-
 require('dotenv').config();
 
 const express = require('express');
@@ -17,8 +15,6 @@ const { initializeQueues } = require('./queues/queueManager');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-
-
 // Trust proxy for accurate IP addresses
 app.set('trust proxy', 1);
 
@@ -31,16 +27,20 @@ app.use(cors({
   credentials: true
 }));
 
+// ============================================================================
+// Body parsing middleware order
+// ============================================================================
 
-// Raw body parser for webhook signature verification
+// 1. Raw body parser for webhook signature verification
 app.use('/api/v1/webhooks', express.raw({ type: 'application/json' }));
 
-// JSON body parser for other routes
+// 2. JSON body parser for other routes
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   logger.info(`${req.method} ${req.path}`, {
     ip: req.ip,
     userAgent: req.get('user-agent')
@@ -59,8 +59,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes
-app.use('/api/v1/webhooks', webhookRoutes);
+// API routes 
+app.use('/api/v1/webhooks', webhookRoutes); 
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/events', eventRoutes);
 app.use('/api/v1/transactions', transactionRoutes);
@@ -78,23 +78,28 @@ app.use((req, res) => {
 app.use(errorHandler);
 
 // MongoDB connection
+console.log('Connecting to MongoDB...');
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
   .then(() => {
+    console.log('✅ Connected to MongoDB successfully');
     logger.info('Connected to MongoDB');
     
     // Initialize Bull queues after DB connection
     initializeQueues()
       .then(() => {
+        console.log('✅ Job queues initialized');
         logger.info('Job queues initialized');
       })
       .catch(err => {
+        console.error('❌ Failed to initialize queues:', err);
         logger.error('Failed to initialize queues:', err);
       });
   })
   .catch(err => {
+    console.error('❌ MongoDB connection error:', err);
     logger.error('MongoDB connection error:', err);
     process.exit(1);
   });
@@ -104,26 +109,33 @@ process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
 function gracefulShutdown() {
+  console.log('Received shutdown signal, closing server gracefully...');
   logger.info('Received shutdown signal, closing server gracefully...');
   
   mongoose.connection.close(false)
     .then(() => {
+      console.log('MongoDB connection closed');
       logger.info('MongoDB connection closed');
       process.exit(0);
     })
     .catch(err => {
+      console.error('Error during shutdown:', err);
       logger.error('Error during shutdown:', err);
       process.exit(1);
     });
 }
 
-
-
 // Start server
 app.listen(PORT, () => {
-  logger.info(`VeriSage X3 server is running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`  VERISAGE X3 SERVER STARTED`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log(`  Port: ${PORT}`);
+  console.log(`  Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`  Webhook endpoint: http://localhost:${PORT}/api/v1/webhooks/indigo`);
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  logger.info(`VeriSage X3 server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
 });
-
 
 
 
