@@ -173,10 +173,50 @@ function sanitizePayload(payload) {
   return sanitized;
 }
 
+
+// In webhookHelper.js - update validatePayload function:
+
+const validatePayload = (payload, eventType) => {
+  const schemas = require('./webhookSchemas');
+  const schema = schemas[eventType];
+  
+  if (!schema) {
+    throw new Error(`No validation schema found for event type: ${eventType}`);
+  }
+  
+  console.log('🔍 Validating payload for event type:', eventType);
+  console.log('📋 Payload to validate:', JSON.stringify(payload, null, 2));
+  
+  const { error, value } = schema.validate(payload, { 
+    abortEarly: false,
+    stripUnknown: false // Keep unknown fields for debugging
+  });
+  
+  if (error) {
+    console.error('Validation failed:');
+    error.details.forEach(detail => {
+      console.error(`  - ${detail.message} at ${detail.path.join('.')}`);
+    });
+    
+    // Log the actual vs expected structure
+    console.error('📄 Actual payload keys:', Object.keys(payload || {}));
+    if (payload?.data) {
+      console.error('📄 Data keys:', Object.keys(payload.data));
+    }
+    
+    throw new Error(`Validation error: ${error.details.map(d => d.message).join(', ')}`);
+  }
+  
+  console.log('Validation passed');
+  return value;
+};
+
+
 module.exports = {
   verifyWebhookSignature,
   generateEventId,
   extractEventType,
   isDuplicateEvent,
+  validatePayload,
   sanitizePayload
 };

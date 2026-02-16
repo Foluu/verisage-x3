@@ -35,8 +35,8 @@ const Dashboard = () => {
         axios.get(`${API_BASE_URL}/api/v1/events/stats/summary`)
       ]);
       
-      console.log('✅ Status response:', statusRes.data);
-      console.log('✅ Stats response:', statsRes.data);
+      // console.log('✅ Status response:', statusRes.data);
+      // console.log('✅ Stats response:', statsRes.data);
       
       setStatus(statusRes.data.status);
       setStats(statsRes.data.data);
