@@ -135,29 +135,20 @@ router.post('/indigo', async (req, res) => {
     console.log('\n📋 EXTRACTING EVENT TYPE');
     console.log('─────────────────────────────────────────────────────────────────────');
     
-    const eventType = extractEventType(verifiedPayload);
+   const eventType = extractEventType(payload);
+    console.log('Event type:', eventType || 'INVALID');
+    
     if (!eventType) {
-      console.error('Invalid event type:', verifiedPayload?.event);
+      console.error('✗ Invalid or unsupported event type');
+      logger.webhook.warn('Invalid event type received', {
+        payload: sanitizePayload(payload),
+        event: payload?.event
+      });
+      
       return res.status(400).json({
         success: false,
         error: 'Invalid or unsupported event type',
-        receivedEvent: verifiedPayload?.event
-      });
-    }
-
-    console.log('Event type:', eventType);
-
-    // Validate payload BEFORE processing
-    try {
-      console.log('🔍 Validating payload...');
-      validatePayload(verifiedPayload, eventType);
-      console.log('Payload validation passed');
-    } catch (validationError) {
-      console.error('Payload validation failed:', validationError.message);
-      return res.status(400).json({
-        success: false,
-        error: 'Payload validation failed',
-        details: validationError.message
+        receivedEvent: payload?.event
       });
     }
     
