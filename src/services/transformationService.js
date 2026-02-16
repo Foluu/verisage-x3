@@ -1,4 +1,6 @@
+
 const logger = require('../utils/logger');
+
 
 class TransformationService {
   constructor() {
@@ -8,38 +10,46 @@ class TransformationService {
   
   /**
    * Convert subunits to base currency
-   * @param {number} amount - Amount in subunits (kobo)
-   * @returns {number} - Amount in base currency (naira)
    */
   convertCurrency(amount) {
     return amount / this.currencyDivisor;
   }
   
   /**
-   * Transform invoice.created event
+   * Transform invoice.created event - FOR ACTUAL PAYLOAD
    */
   transformInvoiceCreated(payload) {
     const { data } = payload;
     
+    // Items may not have variant, use item.id as itemCode
     const lineItems = data.items.map((item, index) => ({
       lineNumber: index + 1,
-      itemCode: item.id, // Use item ID since no SKU/variant in actual payload
+      itemCode: item.variant?.sku || item.id,
       itemDescription: item.name,
       quantity: item.quantity,
       unitPrice: this.convertCurrency(item.price),
       lineTotal: this.convertCurrency(item.total || (item.price * item.quantity)),
       itemId: item.id,
-      type: item.type || 'unknown'
+      itemType: item.type || 'unknown',
+      ...(item.variant && {
+        variantId: item.variant.id,
+        variantTitle: item.variant.title,
+        variantSku: item.variant.sku
+      }),
+      ...(item.consultant && {
+        consultantId: item.consultant.id,
+        consultantName: item.consultant.name
+      })
     }));
     
     const totalAmount = lineItems.reduce((sum, item) => sum + item.lineTotal, 0);
     
     return {
-      documentType: 'SI', // Sales Invoice
+      documentType: 'SI',
       invoiceId: data.id,
       invoiceNumber: data.id,
-      isProforma: data.proforma,
-      invoiceDate: new Date().toISOString(),
+      isProforma: data.proforma || false,
+      invoiceDate: data.timestamp || new Date().toISOString(),
       customerReference: data.patient.mrn,
       customerName: data.patient.name,
       customerId: data.patient.id,
@@ -50,98 +60,63 @@ class TransformationService {
       taxAmount: 0,
       totalAmount,
       currency: 'NGN',
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      operator: data.operator,
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform invoice.updated event (proforma only)
-   */
   transformInvoiceUpdated(payload) {
     return this.transformInvoiceCreated({
       event: 'invoice.created',
-      data: {
-        ...payload.data,
-        proforma: true
-      },
+      data: { ...payload.data, proforma: true },
       metadata: payload.metadata
     });
   }
   
-  /**
-   * Transform invoice.cancelled event
-   */
   transformInvoiceCancelled(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'CN', // Credit Note
-      originalInvoiceId: data.id,
-      cancellationReason: data.reason,
-      cancellationDate: new Date().toISOString(),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      documentType: 'CN',
+      originalInvoiceId: payload.data.id,
+      cancellationReason: payload.data.reason,
+      cancellationDate: payload.data.timestamp || new Date().toISOString(),
+      operator: payload.data.operator,
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform payment.created event - UPDATED FOR ACTUAL PAYLOAD
-   */
   transformPaymentCreated(payload) {
     const { data } = payload;
-    
-    // Transform invoice items
     const lineItems = data.invoice.items.map((item, index) => ({
       lineNumber: index + 1,
-      itemCode: item.id,
+      itemCode: item.variant?.sku || item.id,
       itemDescription: item.name,
       quantity: item.quantity,
       unitPrice: this.convertCurrency(item.price),
       lineTotal: this.convertCurrency(item.total || (item.price * item.quantity)),
       itemId: item.id,
-      type: item.type || 'unknown'
+      itemType: item.type || 'unknown'
     }));
     
-    // Get primary payment (first payment in array)
     const primaryPayment = data.payments[0];
-    
-    // Calculate total from all payments
     const totalPaid = data.payments.reduce((sum, p) => sum + p.amount, 0);
     
     return {
-      documentType: 'PAY', // Payment
+      documentType: 'PAY',
       paymentId: data.id,
       paymentDate: data.timestamp || new Date().toISOString(),
       amount: this.convertCurrency(totalPaid),
       currency: 'NGN',
-      
-      // Primary payment details
       paymentMethod: this.mapPaymentMethod(primaryPayment.method),
       paymentReference: primaryPayment.paymentReference || '',
       provider: primaryPayment.provider || '',
-      
-      // Invoice details (using 'invoice' not 'bill')
-      billId: data.invoice.id,
-      isProforma: data.invoice.proforma,
-      
-      // Customer details
+      invoiceId: data.invoice.id,
+      isProforma: data.invoice.proforma || false,
       customerReference: data.invoice.patient.mrn,
       customerName: data.invoice.patient.name,
       customerId: data.invoice.patient.id,
       customerEmail: data.invoice.patient.email || '',
       customerPhone: data.invoice.patient.phoneNumber || '',
-      
-      // Line items
       lineItems,
-      
-      // All payments (for reference)
       allPayments: data.payments.map(p => ({
         id: p.id,
         amount: this.convertCurrency(p.amount),
@@ -149,274 +124,154 @@ class TransformationService {
         reference: p.paymentReference || '',
         operator: p.operator || data.invoice.operator
       })),
-      
-      // Operator
       operator: primaryPayment.operator || data.invoice.operator,
-      
-      metadata: {
-        ...payload.metadata,
-        claims: data.claims || [],
-        timestamp: data.timestamp
-      }
+      metadata: { ...payload.metadata, claims: data.claims || [], timestamp: data.timestamp }
     };
   }
   
-  /**
-   * Map HMS payment method to Sage X3 payment method
-   */
   mapPaymentMethod(hmsMethod) {
-    const methodMap = {
-      'wallet': 'WALLET',
-      'cash': 'CASH',
-      'pos': 'CARD',
-      'transfer': 'BANK_TRANSFER',
-      'cheque': 'CHEQUE',
+    const map = {
+      'wallet': 'WALLET', 'cash': 'CASH', 'pos': 'CARD',
+      'transfer': 'BANK_TRANSFER', 'cheque': 'CHEQUE',
       'direct-lodgement': 'DIRECT_DEPOSIT'
     };
-    
-    return methodMap[hmsMethod] || 'OTHER';
+    return map[hmsMethod] || 'OTHER';
   }
   
-  /**
-   * Transform payment.cancelled event
-   */
   transformPaymentCancelled(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'PAY_REV', // Payment Reversal
-      originalPaymentId: data.id,
-      cancellationReason: data.reason,
-      cancellationDate: new Date().toISOString(),
-      operator: {
-        id: data.operator.id,
-        name: data.operator.name
-      },
+      documentType: 'PAY_REV',
+      originalPaymentId: payload.data.id,
+      cancellationReason: payload.data.reason,
+      cancellationDate: payload.data.timestamp || new Date().toISOString(),
+      operator: payload.data.operator,
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform item.created event
-   */
   transformItemCreated(payload) {
     const { data } = payload;
-    
     return {
-      documentType: 'ITEM', // Item Master
+      documentType: 'ITEM',
       itemId: data.id,
       itemName: data.name,
       itemType: data.type === 'product' ? 'STOCK' : 'SERVICE',
-      categories: (data.categories || []).map(cat => ({
-        id: cat.id,
-        name: cat.name
-      })),
+      categories: (data.categories || []).map(cat => ({ id: cat.id, name: cat.name })),
       unitOfSale: data.unitOfSale || '',
       unitOfPurchase: data.unitOfPurchase || '',
       attributes: data.attributes || {},
-      createdDate: new Date().toISOString(),
+      createdDate: data.timestamp || new Date().toISOString(),
       operator: data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform stock.created event - UPDATED FOR ACTUAL PAYLOAD
-   */
   transformStockCreated(payload) {
     const { data } = payload;
-    
     return {
-      documentType: 'STK_IN', // Stock Receipt
+      documentType: 'STK_IN',
       stockId: data.id,
       batchId: data.batchId,
       stockCode: data.code,
-      
-      // Item details from nested object
       itemId: data.item.id,
       itemName: data.item.name,
-      
       quantity: data.quantity,
       costPrice: this.convertCurrency(data.costPrice),
       totalValue: this.convertCurrency(data.costPrice * data.quantity),
       expiryDate: data.expiryDate,
-      
-      // Supplier details
       supplierId: data.supplier.id,
       supplierName: data.supplier.name,
-      
+      ...(data.variant && {
+        variantId: data.variant.id,
+        variantTitle: data.variant.title,
+        variantSku: data.variant.sku
+      }),
       receiptDate: data.timestamp || new Date().toISOString(),
       operator: data.operator || { id: 'system', name: 'System' },
-      
-      metadata: {
-        ...payload.metadata,
-        timestamp: data.timestamp
-      }
+      metadata: { ...payload.metadata, timestamp: data.timestamp }
     };
   }
   
-  /**
-   * Transform stock.transferred event
-   */
   transformStockTransferred(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'STK_TRF', // Stock Transfer
-      fromLocation: {
-        id: data.from.id,
-        name: data.from.name
-      },
-      toLocation: {
-        id: data.to.id,
-        name: data.to.name
-      },
-      comment: data.comment || '',
-      transferDate: data.timestamp || new Date().toISOString(),
-      items: data.stocks.map(stock => ({
-        stockCode: stock.code,
-        batchId: stock.batchId,
-        quantity: stock.quantity
-      })),
-      operator: data.operator || { id: 'system', name: 'System' },
+      documentType: 'STK_TRF',
+      fromLocation: payload.data.from,
+      toLocation: payload.data.to,
+      comment: payload.data.comment || '',
+      transferDate: payload.data.timestamp || new Date().toISOString(),
+      items: payload.data.stocks.map(s => ({ stockCode: s.code, batchId: s.batchId, quantity: s.quantity })),
+      operator: payload.data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform stock.sold event
-   */
   transformStockSold(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'STK_OUT', // Stock Issue/Sale
+      documentType: 'STK_OUT',
       issueType: 'SALE',
-      issueId: data.id,
-      billId: data.bill,
-      fromLocation: {
-        id: data.from.id,
-        name: data.from.name
-      },
-      issueDate: data.timestamp || new Date().toISOString(),
-      items: data.stocks.map(stock => ({
-        stockCode: stock.code,
-        batchId: stock.batchId,
-        quantity: stock.quantity
-      })),
-      operator: data.operator || { id: 'system', name: 'System' },
+      issueId: payload.data.id,
+      billId: payload.data.bill,
+      fromLocation: payload.data.from,
+      issueDate: payload.data.timestamp || new Date().toISOString(),
+      items: payload.data.stocks.map(s => ({ stockCode: s.code, batchId: s.batchId, quantity: s.quantity })),
+      operator: payload.data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform stock.dispensed event
-   */
   transformStockDispensed(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'STK_OUT', // Stock Issue
-      issueType: data.purpose ? data.purpose.toUpperCase() : 'DISPENSED',
-      issueId: data.id,
-      billId: data.bill || '',
-      toRecipient: {
-        id: data.to.id,
-        name: data.to.name,
-        type: data.to.type,
-        mrn: data.to.mrn || ''
-      },
-      fromLocation: {
-        id: data.from.id,
-        name: data.from.name
-      },
-      issueDate: data.timestamp || new Date().toISOString(),
-      items: data.stocks.map(stock => ({
-        stockCode: stock.code,
-        batchId: stock.batchId,
-        quantity: stock.quantity
-      })),
-      operator: data.operator || { id: 'system', name: 'System' },
+      documentType: 'STK_OUT',
+      issueType: payload.data.purpose?.toUpperCase() || 'DISPENSED',
+      issueId: payload.data.id,
+      billId: payload.data.bill || '',
+      toRecipient: { ...payload.data.to, mrn: payload.data.to.mrn || '' },
+      fromLocation: payload.data.from,
+      issueDate: payload.data.timestamp || new Date().toISOString(),
+      items: payload.data.stocks.map(s => ({ stockCode: s.code, batchId: s.batchId, quantity: s.quantity })),
+      operator: payload.data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Transform stock.returned event
-   */
   transformStockReturned(payload) {
-    const { data } = payload;
-    
     return {
-      documentType: 'STK_RET', // Stock Return
-      returnId: data.id,
-      reason: data.reason,
-      fromLocation: {
-        id: data.from.id,
-        name: data.from.name
-      },
-      toLocation: {
-        id: data.to.id,
-        name: data.to.name
-      },
-      returnDate: data.timestamp || new Date().toISOString(),
-      items: data.stocks.map(stock => ({
-        stockCode: stock.code,
-        batchId: stock.batchId,
-        quantity: stock.quantity
-      })),
-      operator: data.operator || { id: 'system', name: 'System' },
+      documentType: 'STK_RET',
+      returnId: payload.data.id,
+      reason: payload.data.reason,
+      fromLocation: payload.data.from,
+      toLocation: payload.data.to,
+      returnDate: payload.data.timestamp || new Date().toISOString(),
+      items: payload.data.stocks.map(s => ({ stockCode: s.code, batchId: s.batchId, quantity: s.quantity })),
+      operator: payload.data.operator || { id: 'system', name: 'System' },
       metadata: payload.metadata || {}
     };
   }
   
-  /**
-   * Main transform method - routes to appropriate transformer
-   */
   transform(eventType, payload) {
     logger.transformation.info(`Transforming event: ${eventType}`);
     
     try {
-      let transformed;
+      const transformers = {
+        'invoice.created': this.transformInvoiceCreated,
+        'invoice.updated': this.transformInvoiceUpdated,
+        'invoice.cancelled': this.transformInvoiceCancelled,
+        'payment.created': this.transformPaymentCreated,
+        'payment.cancelled': this.transformPaymentCancelled,
+        'item.created': this.transformItemCreated,
+        'stock.created': this.transformStockCreated,
+        'stock.transferred': this.transformStockTransferred,
+        'stock.sold': this.transformStockSold,
+        'stock.dispensed': this.transformStockDispensed,
+        'stock.returned': this.transformStockReturned
+      };
       
-      switch (eventType) {
-        case 'invoice.created':
-          transformed = this.transformInvoiceCreated(payload);
-          break;
-        case 'invoice.updated':
-          transformed = this.transformInvoiceUpdated(payload);
-          break;
-        case 'invoice.cancelled':
-          transformed = this.transformInvoiceCancelled(payload);
-          break;
-        case 'payment.created':
-          transformed = this.transformPaymentCreated(payload);
-          break;
-        case 'payment.cancelled':
-          transformed = this.transformPaymentCancelled(payload);
-          break;
-        case 'item.created':
-          transformed = this.transformItemCreated(payload);
-          break;
-        case 'stock.created':
-          transformed = this.transformStockCreated(payload);
-          break;
-        case 'stock.transferred':
-          transformed = this.transformStockTransferred(payload);
-          break;
-        case 'stock.sold':
-          transformed = this.transformStockSold(payload);
-          break;
-        case 'stock.dispensed':
-          transformed = this.transformStockDispensed(payload);
-          break;
-        case 'stock.returned':
-          transformed = this.transformStockReturned(payload);
-          break;
-        default:
-          throw new Error(`Unsupported event type: ${eventType}`);
+      const transformer = transformers[eventType];
+      if (!transformer) {
+        throw new Error(`Unsupported event type: ${eventType}`);
       }
       
+      const transformed = transformer.call(this, payload);
       logger.transformation.info(`Successfully transformed event: ${eventType}`);
       return transformed;
       
@@ -426,5 +281,6 @@ class TransformationService {
     }
   }
 }
+
 
 module.exports = new TransformationService();
