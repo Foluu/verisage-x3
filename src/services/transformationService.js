@@ -1,27 +1,17 @@
 
 const logger = require('../utils/logger');
 
-
 class TransformationService {
   constructor() {
-    // Currency conversion: kobo to naira (divide by 100)
     this.currencyDivisor = parseInt(process.env.SAGE_CURRENCY_DIVISOR || '100');
   }
   
-  /**
-   * Convert subunits to base currency
-   */
   convertCurrency(amount) {
     return amount / this.currencyDivisor;
   }
   
-  /**
-   * Transform invoice.created event - FOR ACTUAL PAYLOAD
-   */
   transformInvoiceCreated(payload) {
     const { data } = payload;
-    
-    // Items may not have variant, use item.id as itemCode
     const lineItems = data.items.map((item, index) => ({
       lineNumber: index + 1,
       itemCode: item.variant?.sku || item.id,
@@ -84,9 +74,12 @@ class TransformationService {
     };
   }
   
+  // CORRECTED: Payment transformation for actual payload structure
   transformPaymentCreated(payload) {
     const { data } = payload;
-    const lineItems = data.invoice.items.map((item, index) => ({
+    
+    // Items, patient, operator are directly in data (NOT in invoice object)
+    const lineItems = data.items.map((item, index) => ({
       lineNumber: index + 1,
       itemCode: item.variant?.sku || item.id,
       itemDescription: item.name,
@@ -109,23 +102,30 @@ class TransformationService {
       paymentMethod: this.mapPaymentMethod(primaryPayment.method),
       paymentReference: primaryPayment.paymentReference || '',
       provider: primaryPayment.provider || '',
-      invoiceId: data.invoice.id,
-      isProforma: data.invoice.proforma || false,
-      customerReference: data.invoice.patient.mrn,
-      customerName: data.invoice.patient.name,
-      customerId: data.invoice.patient.id,
-      customerEmail: data.invoice.patient.email || '',
-      customerPhone: data.invoice.patient.phoneNumber || '',
+      
+      // Customer details from data.patient (not data.invoice.patient)
+      customerReference: data.patient.mrn,
+      customerName: data.patient.name,
+      customerId: data.patient.id,
+      customerEmail: data.patient.email || '',
+      customerPhone: data.patient.phoneNumber || '',
+      
       lineItems,
+      
       allPayments: data.payments.map(p => ({
         id: p.id,
         amount: this.convertCurrency(p.amount),
         method: this.mapPaymentMethod(p.method),
         reference: p.paymentReference || '',
-        operator: p.operator || data.invoice.operator
+        operator: p.operator || data.operator
       })),
-      operator: primaryPayment.operator || data.invoice.operator,
-      metadata: { ...payload.metadata, claims: data.claims || [], timestamp: data.timestamp }
+      
+      operator: primaryPayment.operator || data.operator,
+      metadata: { 
+        ...payload.metadata, 
+        claims: data.claims || [], 
+        timestamp: data.timestamp 
+      }
     };
   }
   
@@ -281,6 +281,5 @@ class TransformationService {
     }
   }
 }
-
 
 module.exports = new TransformationService();

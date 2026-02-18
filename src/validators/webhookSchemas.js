@@ -1,9 +1,8 @@
 
 const Joi = require('joi');
 
-
 // ============================================================================
-// COMMON SCHEMAS - UPDATED TO MATCH ACTUAL PAYLOADS
+// COMMON SCHEMAS
 // ============================================================================
 
 const operatorSchema = Joi.object({
@@ -23,7 +22,6 @@ const patientSchema = Joi.object({
   admission: Joi.object().optional()
 });
 
-// Consultant schema (appears in items)
 const consultantSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().required(),
@@ -32,22 +30,18 @@ const consultantSchema = Joi.object({
   avatar: Joi.string().allow('', null).optional()
 });
 
-// Category schema
 const categorySchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().required()
 });
 
-// UPDATED: Item schema to match actual structure (NO variant requirement)
 const itemSchema = Joi.object({
   id: Joi.string().required(),
   name: Joi.string().required(),
   quantity: Joi.number().min(0).required(),
   price: Joi.number().min(0).required(),
   total: Joi.number().min(0).optional(),
-  type: Joi.string().optional(), // 'service' or 'product'
-  
-  // Optional fields that may be present
+  type: Joi.string().optional(),
   categories: Joi.array().items(categorySchema).optional(),
   consultant: consultantSchema.optional(),
   basePrice: Joi.number().min(0).optional(),
@@ -63,8 +57,6 @@ const itemSchema = Joi.object({
     id: Joi.string(),
     name: Joi.string()
   }).optional(),
-  
-  // Variant is OPTIONAL (not always present)
   variant: Joi.object({
     id: Joi.string().required(),
     title: Joi.string().required(),
@@ -84,18 +76,18 @@ const stockItemSchema = Joi.object({
 });
 
 // ============================================================================
-// INVOICE VALIDATION SCHEMAS - FIXED
+// INVOICE SCHEMAS
 // ============================================================================
 
 const invoiceCreatedSchema = Joi.object({
   event: Joi.string().valid('invoice.created').required(),
   data: Joi.object({
     id: Joi.string().required(),
-    proforma: Joi.boolean().optional(), // FIXED: Made optional
+    proforma: Joi.boolean().optional(),
     items: Joi.array().items(itemSchema).min(1).required(),
     patient: patientSchema.required(),
     operator: operatorSchema.required(),
-    timestamp: Joi.string().optional() // Added timestamp
+    timestamp: Joi.string().optional()
   }).required(),
   metadata: Joi.object().optional()
 });
@@ -125,7 +117,7 @@ const invoiceCancelledSchema = Joi.object({
 });
 
 // ============================================================================
-// PAYMENT VALIDATION SCHEMAS - FIXED FOR ACTUAL STRUCTURE
+// PAYMENT SCHEMAS - CORRECTED FOR ACTUAL PAYLOAD STRUCTURE
 // ============================================================================
 
 const paymentCreatedSchema = Joi.object({
@@ -135,16 +127,12 @@ const paymentCreatedSchema = Joi.object({
     timestamp: Joi.string().optional(),
     claims: Joi.array().optional(),
     
-    // FIXED: 'invoice' not 'bill'
-    invoice: Joi.object({
-      id: Joi.string().required(),
-      proforma: Joi.boolean().optional(), // Made optional
-      items: Joi.array().items(itemSchema).min(1).required(),
-      patient: patientSchema.required(),
-      operator: operatorSchema.required()
-    }).required(),
+    // CORRECTED: Items, patient, operator are directly in data (NOT in invoice object)
+    items: Joi.array().items(itemSchema).min(1).required(),
+    patient: patientSchema.required(),
+    operator: operatorSchema.required(),
     
-    // FIXED: payments is an ARRAY
+    // Payments is an array
     payments: Joi.array().items(Joi.object({
       id: Joi.string().required(),
       amount: Joi.number().min(0).required(),
@@ -169,7 +157,7 @@ const paymentCancelledSchema = Joi.object({
 });
 
 // ============================================================================
-// ITEM VALIDATION SCHEMAS
+// ITEM SCHEMAS
 // ============================================================================
 
 const itemCreatedSchema = Joi.object({
@@ -218,7 +206,7 @@ const itemArchivedSchema = Joi.object({
 });
 
 // ============================================================================
-// STOCK VALIDATION SCHEMAS - FIXED FOR ACTUAL STRUCTURE
+// STOCK SCHEMAS
 // ============================================================================
 
 const stockCreatedSchema = Joi.object({
@@ -231,26 +219,19 @@ const stockCreatedSchema = Joi.object({
     costPrice: Joi.number().min(0).required(),
     expiryDate: Joi.string().allow(null).optional(),
     timestamp: Joi.string().optional(),
-    
-    // FIXED: item is an OBJECT not a string
     item: Joi.object({
       id: Joi.string().required(),
       name: Joi.string().required()
     }).required(),
-    
-    // Supplier object
     supplier: Joi.object({
       id: Joi.string().required(),
       name: Joi.string().required()
     }).required(),
-    
-    // Variant is optional (not always present)
     variant: Joi.object({
       id: Joi.string(),
       title: Joi.string(),
       sku: Joi.string()
     }).optional(),
-    
     operator: operatorSchema.optional()
   }).required(),
   metadata: Joi.object().optional()
@@ -364,25 +345,18 @@ const stockReturnedSchema = Joi.object({
 });
 
 // ============================================================================
-// EXPORT VALIDATION SCHEMAS
+// EXPORT SCHEMAS
 // ============================================================================
 
 const validationSchemas = {
-  // Invoice events
   'invoice.created': invoiceCreatedSchema,
   'invoice.updated': invoiceUpdatedSchema,
   'invoice.cancelled': invoiceCancelledSchema,
-  
-  // Payment events
   'payment.created': paymentCreatedSchema,
   'payment.cancelled': paymentCancelledSchema,
-  
-  // Item events
   'item.created': itemCreatedSchema,
   'item.updated': itemUpdatedSchema,
   'item.archived': itemArchivedSchema,
-  
-  // Stock events
   'stock.created': stockCreatedSchema,
   'stock.updated': stockUpdatedSchema,
   'stock.incremented': stockIncrementedSchema,
