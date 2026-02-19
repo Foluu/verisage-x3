@@ -74,7 +74,7 @@ class TransformationService {
     };
   }
   
-  // CORRECTED: Payment transformation for actual payload structure
+  // Payment transformation for actual payload structure
   transformPaymentCreated(payload) {
     const { data } = payload;
     
@@ -234,19 +234,43 @@ class TransformationService {
     };
   }
   
-  transformStockReturned(payload) {
-    return {
-      documentType: 'STK_RET',
-      returnId: payload.data.id,
-      reason: payload.data.reason,
-      fromLocation: payload.data.from,
-      toLocation: payload.data.to,
-      returnDate: payload.data.timestamp || new Date().toISOString(),
-      items: payload.data.stocks.map(s => ({ stockCode: s.code, batchId: s.batchId, quantity: s.quantity })),
-      operator: payload.data.operator || { id: 'system', name: 'System' },
-      metadata: payload.metadata || {}
-    };
+ transformStockReturned(payload) {
+  if (!payload?.data) {
+    throw new Error('Invalid payload: missing data object');
   }
+
+  const data = payload.data;
+
+  // Normalize possible stock array sources
+  const stockArray =
+    data.stocks ||
+    data.items ||
+    data.returnItems ||
+    [];
+
+  if (!Array.isArray(stockArray)) {
+    throw new Error('Invalid payload: stock items must be an array');
+  }
+
+  return {
+    documentType: 'STK_RET',
+    returnId: data.id || `RET_${Date.now()}`,
+    reason: data.reason || 'unspecified',
+    fromLocation: data.from || null,
+    toLocation: data.to || null,
+    returnDate: data.timestamp || new Date().toISOString(),
+
+    items: stockArray.map(s => ({
+      stockCode: s.code || s.stockCode || 'UNKNOWN',
+      batchId: s.batchId || null,
+      quantity: Number(s.quantity || 0)
+    })),
+
+    operator: data.operator || { id: 'system', name: 'System' },
+    metadata: payload.metadata || {}
+  };
+}
+
   
   transform(eventType, payload) {
     logger.transformation.info(`Transforming event: ${eventType}`);

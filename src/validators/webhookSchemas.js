@@ -334,10 +334,16 @@ const stockReturnedSchema = Joi.object({
   event: Joi.string().valid('stock.returned').required(),
   data: Joi.object({
     id: Joi.string().required(),
-    reason: Joi.string().required(),
-    from: locationSchema.required(),
-    to: locationSchema.required(),
-    stocks: Joi.array().items(stockItemSchema).min(1).required(),
+    reason: Joi.string().optional(), // Made optional to match actual payload
+    from: Joi.object({               // Made optional
+      id: Joi.string().optional(),
+      name: Joi.string().optional()
+    }).optional(),
+    to: Joi.object({                 // Made optional
+      id: Joi.string().optional(),
+      name: Joi.string().optional()
+    }).optional(),
+    stocks: Joi.array().items(stockItemSchema).min(1).optional(), // Made optional
     operator: operatorSchema.optional(),
     timestamp: Joi.string().optional()
   }).required(),
