@@ -4,15 +4,34 @@ const logger = require('../utils/logger');
 class SageX3Client {
   constructor() {
     this.baseUrl = process.env.SAGE_X3_BASE_URL;
-    this.clientId = process.env.SAGE_X3_CLIENT_ID;
-    this.clientSecret = process.env.SAGE_X3_CLIENT_SECRET;
-    this.redirectUri = process.env.SAGE_X3_REDIRECT_URI;
     this.folder = process.env.SAGE_X3_FOLDER;
     this.company = process.env.SAGE_X3_COMPANY;
     
+    // Determine authentication mode
+    this.authMode = process.env.SAGE_X3_AUTH_MODE || 'bearer'; // 'bearer' or 'oauth2'
+    
+    // OAuth2 credentials (only needed if using OAuth2)
+    this.clientId = process.env.SAGE_X3_CLIENT_ID;
+    this.clientSecret = process.env.SAGE_X3_CLIENT_SECRET;
+    this.redirectUri = process.env.SAGE_X3_REDIRECT_URI;
+    
+    // Bearer token (direct authentication)
+    this.bearerToken = process.env.SAGE_X3_BEARER_TOKEN;
+    
+    // OAuth2 tokens
     this.accessToken = null;
     this.refreshToken = null;
     this.tokenExpiry = null;
+    
+    // Initialize access token based on auth mode
+    if (this.authMode === 'bearer' && this.bearerToken) {
+      this.accessToken = this.bearerToken;
+      logger.sageX3.info('Using direct bearer token authentication');
+    } else if (this.authMode === 'oauth2') {
+      logger.sageX3.info('Using OAuth2 authentication');
+    } else {
+      logger.sageX3.warn('No valid authentication configured. Please set SAGE_X3_BEARER_TOKEN or configure OAuth2');
+    }
     
     this.axiosInstance = axios.create({
       baseURL: this.baseUrl,
@@ -25,7 +44,14 @@ class SageX3Client {
     // Add request interceptor for authentication
     this.axiosInstance.interceptors.request.use(
       async (config) => {
-        await this.ensureValidToken();
+        if (this.authMode === 'oauth2') {
+          await this.ensureValidToken();
+        }
+        
+        if (!this.accessToken) {
+          throw new Error('No access token available. Please configure SAGE_X3_BEARER_TOKEN or complete OAuth2 authorization');
+        }
+        
         config.headers.Authorization = `Bearer ${this.accessToken}`;
         return config;
       },
@@ -40,8 +66,21 @@ class SageX3Client {
       async (error) => {
         if (error.response?.status === 401 && !error.config._retry) {
           error.config._retry = true;
-          await this.refreshAccessToken();
-          return this.axiosInstance(error.config);
+          
+          // Only try to refresh if using OAuth2
+          if (this.authMode === 'oauth2') {
+            try {
+              await this.refreshAccessToken();
+              return this.axiosInstance(error.config);
+            } catch (refreshError) {
+              logger.sageX3.error('Failed to refresh token:', refreshError.message);
+              throw error;
+            }
+          } else {
+            // For bearer token, cannot refresh - token is invalid
+            logger.sageX3.error('Bearer token authentication failed. Token may be expired or invalid.');
+            throw new Error('Bearer token authentication failed. Please obtain a new token from Sage X3 administrator.');
+          }
         }
         return Promise.reject(error);
       }
@@ -129,11 +168,31 @@ class SageX3Client {
    * Ensure we have a valid access token
    */
   async ensureValidToken() {
+    // If using bearer token, nothing to refresh
+    if (this.authMode === 'bearer') {
+      return;
+    }
+    
+    // OAuth2 mode: check expiry and refresh if needed
     const bufferTime = 60 * 1000; // 1 minute buffer
     
     if (!this.accessToken || !this.tokenExpiry || Date.now() >= (this.tokenExpiry - bufferTime)) {
+      if (!this.refreshToken) {
+        throw new Error('No refresh token available. Please complete OAuth2 authorization first.');
+      }
       await this.refreshAccessToken();
     }
+  }
+  
+  /**
+   * Set bearer token directly (for manual configuration)
+   * @param {string} token - Bearer token provided by Sage X3 administrator
+   */
+  setBearerToken(token) {
+    this.bearerToken = token;
+    this.accessToken = token;
+    this.authMode = 'bearer';
+    logger.sageX3.info('Bearer token set manually');
   }
   
   /**

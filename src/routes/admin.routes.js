@@ -46,7 +46,145 @@ router.get('/status', async (req, res) => {
     logger.error('Error fetching system status:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch system status'
+      error: 'Failed to fetch system status',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/v1/admin/test-sage-connection
+ * Test Sage X3 connection with detailed diagnostics
+ */
+router.get('/test-sage-connection', async (req, res) => {
+  try {
+    const diagnostics = {
+      authMode: process.env.SAGE_X3_AUTH_MODE || 'not set',
+      baseUrl: process.env.SAGE_X3_BASE_URL || 'not set',
+      folder: process.env.SAGE_X3_FOLDER || 'not set',
+      company: process.env.SAGE_X3_COMPANY || 'not set',
+      hasBearerToken: !!process.env.SAGE_X3_BEARER_TOKEN,
+      hasOAuth2Credentials: !!(process.env.SAGE_X3_CLIENT_ID && process.env.SAGE_X3_CLIENT_SECRET)
+    };
+    
+    // Try to fetch folders
+    try {
+      const folders = await sageX3Client.getFolders();
+      
+      res.json({
+        success: true,
+        message: 'Sage X3 connection successful',
+        diagnostics,
+        folders: folders.folders?.map(f => f.name) || []
+      });
+    } catch (sageError) {
+      res.json({
+        success: false,
+        message: 'Sage X3 connection failed',
+        diagnostics,
+        error: sageError.message,
+        errorDetails: sageError.response?.data || null,
+        troubleshooting: [
+          'Verify SAGE_X3_BEARER_TOKEN is set correctly in .env',
+          'Check SAGE_X3_BASE_URL is correct',
+          'Confirm token has not expired',
+          'Verify network connectivity to Sage X3',
+          'Check token permissions with Sage administrator'
+        ]
+      });
+    }
+    
+  } catch (error) {
+    logger.error('Error testing Sage X3 connection:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to test connection',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/v1/admin/set-bearer-token
+ * Manually set bearer token (for runtime configuration)
+ */
+router.post('/set-bearer-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    
+    if (!token || token.length < 20) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid token format. Token should be a long string (JWT).'
+      });
+    }
+    
+    // Set the token
+    sageX3Client.setBearerToken(token);
+    
+    // Test the connection
+    try {
+      await sageX3Client.getFolders();
+      
+      // Store in configuration for persistence
+      const Configuration = require('../models/Configuration');
+      await Configuration.findOneAndUpdate(
+        { key: 'sage.bearerToken' },
+        {
+          key: 'sage.bearerToken',
+          category: 'sage_x3',
+          value: token,
+          valueType: 'string',
+          description: 'Sage X3 Bearer Token',
+          sensitive: true,
+          encrypted: false,
+          lastModified: {
+            by: req.user?.id || 'admin',
+            at: new Date(),
+            reason: 'Bearer token updated via API'
+          }
+        },
+        { upsert: true, new: true }
+      );
+      
+      await AuditLog.logAction({
+        action: 'config.updated',
+        actor: {
+          type: 'user',
+          userId: req.user?.id || 'admin',
+          ipAddress: req.ip
+        },
+        details: {
+          action: 'bearer_token_updated',
+          message: 'Sage X3 bearer token updated and validated'
+        },
+        result: {
+          status: 'success',
+          message: 'Bearer token set and verified'
+        },
+        category: 'admin',
+        severity: 'warning'
+      });
+      
+      res.json({
+        success: true,
+        message: 'Bearer token set and verified successfully'
+      });
+      
+    } catch (testError) {
+      res.status(400).json({
+        success: false,
+        error: 'Token set but connection test failed',
+        details: testError.message
+      });
+    }
+    
+  } catch (error) {
+    logger.error('Error setting bearer token:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to set bearer token',
+      details: error.message
     });
   }
 });
