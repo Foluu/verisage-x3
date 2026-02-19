@@ -4,7 +4,7 @@ const transactionSchema = new mongoose.Schema({
   // Transaction identification
   transactionId: {
     type: String,
-    required: true,
+    required: false,
     unique: true,
     index: true
   },
@@ -26,12 +26,12 @@ const transactionSchema = new mongoose.Schema({
   sageX3Details: {
     documentReference: {
       type: String,
-      required: true,
+      // required: true,
       index: true
     },
     documentType: {
       type: String,
-      required: true,
+      // required: true,
       enum: ['invoice', 'payment', 'credit_note', 'stock_movement', 'purchase_order']
     },
     folder: String,
@@ -67,8 +67,8 @@ const transactionSchema = new mongoose.Schema({
   // Transaction status
   status: {
     type: String,
-    enum: ['synced', 'reversed', 'failed'],
-    default: 'synced',
+    enum: ['pending', 'synced', 'reversed', 'failed'],
+    default: 'pending',
     index: true
   },
   

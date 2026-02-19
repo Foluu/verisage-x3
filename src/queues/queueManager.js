@@ -40,6 +40,8 @@ async function queueEvent(eventId) {
 /**
  * Process a single event through the pipeline
  */
+// loop fixed
+
 async function processEvent(eventId) {
   const event = await Event.findByEventId(eventId);
   
@@ -63,10 +65,10 @@ async function processEvent(eventId) {
       await transformEvent(event);
     }
     
-    // Step 3: Sync to Sage X3 (skip for now)
-    // if (event.status === 'transformed') {
-    //   await syncToSageX3(event);
-    // }
+    // Step 3: Sync to Sage X3
+    if (event.status === 'transformed') {
+      await syncToSageX3(event);
+    }
     
     return {
       success: true,
@@ -176,6 +178,138 @@ async function transformEvent(event) {
     });
     
     logger.queue.error(`Transformation failed for ${event.eventId}:`, { error: error.message });
+    throw error;
+  }
+}
+
+/**
+ * Sync Event to SageX3
+ */
+async function syncToSageX3(event) {
+  try {
+    // Get the transformed data from the event
+    const transformedData = event.transformedPayload;
+    
+    if (!transformedData) {
+      throw new Error('No transformed payload found for event');
+    }
+    
+    logger.queue.info(`Syncing to Sage X3: ${event.eventId}`, {
+      eventType: event.eventType
+    });
+    
+    // Map event types to valid document type enum values
+    const documentTypeEnumMap = {
+      'payment.created': 'payment',
+      'invoice.created': 'invoice'
+    };
+    
+    const documentType = documentTypeEnumMap[event.eventType] || 'general';
+    
+    // Create transaction record with ALL required fields
+    const transaction = new Transaction({
+      eventId: event.eventId,
+      eventType: event.eventType,
+      status: 'synced',
+      sageX3Payload: transformedData,
+      attempts: 0,
+      transactionId: `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      sageX3Details: {
+        documentType: documentType, // Use valid enum value from client methods
+        documentReference: event.eventId
+      }
+    });
+    
+    await transaction.save();
+    
+    // Call appropriate Sage X3 method based on event type
+    let response;
+    
+    if (event.eventType === 'payment.created') {
+      response = await sageX3Client.postPayment(transformedData);
+    } else if (event.eventType === 'invoice.created') {
+      response = await sageX3Client.postInvoice(transformedData);
+    } else {
+      throw new Error(`Unsupported event type for Sage X3 sync: ${event.eventType}`);
+    }
+    
+    // Update transaction with success
+    transaction.status = 'synced';
+    transaction.response = response;
+    transaction.completedAt = new Date();
+    transaction.sageX3Details = {
+      documentType: documentType,
+      documentReference: response.documentReference || event.eventId,
+      sageResponse: response
+    };
+    await transaction.save();
+    
+    // Mark event as synced
+    await event.markAsSynced(response);
+    
+    await AuditLog.logAction({
+      action: 'event.synced',
+      eventId: event.eventId,
+      actor: { type: 'system' },
+      details: { 
+        eventType: event.eventType,
+        sageResponse: response 
+      },
+      result: { status: 'success', message: 'Successfully synced to Sage X3' },
+      category: 'processing',
+      severity: 'info'
+    });
+    
+    logger.queue.info(`Event synced to Sage X3: ${event.eventId}`, {
+      response: response
+    });
+    
+  } catch (error) {
+    // Update transaction with failure
+    try {
+      const transaction = await Transaction.findOne({ eventId: event.eventId });
+      if (transaction) {
+        transaction.status = 'failed';
+        transaction.errorMessage = error.message;
+        transaction.errorDetails = {
+          stack: error.stack,
+          response: error.response?.data
+        };
+        transaction.attempts += 1;
+        transaction.sageX3Details = {
+          documentType: documentTypeEnumMap[event.eventType] || 'general',
+          documentReference: event.eventId
+        };
+        await transaction.save();
+      }
+    } catch (transactionError) {
+      logger.queue.error('Failed to update transaction record:', transactionError);
+    }
+    
+    // Use 'sage_api' which is a valid enum value
+    await event.markAsFailed('sage_api', error.message, { 
+      stack: error.stack,
+      sageResponse: error.response?.data 
+    });
+    
+    await AuditLog.logAction({
+      action: 'event.synced',
+      eventId: event.eventId,
+      actor: { type: 'system' },
+      details: { 
+        eventType: event.eventType,
+        error: error.message 
+      },
+      result: { status: 'failure', message: 'Failed to sync to Sage X3' },
+      category: 'processing',
+      severity: 'error'
+    });
+    
+    logger.queue.error(`Sage X3 sync failed for ${event.eventId}:`, { 
+      error: error.message,
+      response: error.response?.data
+    });
+    
     throw error;
   }
 }
